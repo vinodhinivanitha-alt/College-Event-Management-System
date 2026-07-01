@@ -1,0 +1,272 @@
+from flask import Flask, request, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import UserMixin, LoginManager, login_user, logout_user, login_required, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+import random
+
+app = Flask(__name__)
+app.secret_key = "secret123"
+
+# DATABASE
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://root:password@localhost/event_db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+
+# LOGIN
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# ================= TABLES ================= #
+
+class User(UserMixin, db.Model):
+user_id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100))
+    email = db.Column(db.String(100), unique=True)
+    password = db.Column(db.String(255))
+    role = db.Column(db.String(20))  # Admin / Student
+
+class Event(db.Model):
+event_id = db.Column(db.Integer, primary_key=True)
+event_name = db.Column(db.String(100))
+    category = db.Column(db.String(50))
+    date = db.Column(db.String(50))
+    time = db.Column(db.String(50))
+    venue = db.Column(db.String(100))
+    description = db.Column(db.Text)
+    price = db.Column(db.Float)
+organizer_name = db.Column(db.String(100))
+organizer_contact = db.Column(db.String(50))
+
+class Instruction(db.Model):
+instruction_id = db.Column(db.Integer, primary_key=True)
+event_id = db.Column(db.Integer)
+    text = db.Column(db.Text)
+
+class Registration(db.Model):
+registration_id = db.Column(db.Integer, primary_key=True)
+user_id = db.Column(db.Integer)
+event_id = db.Column(db.Integer)
+registration_date = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Payment(db.Model):
+payment_id = db.Column(db.Integer, primary_key=True)
+registration_id = db.Column(db.Integer)
+    amount = db.Column(db.Float)
+payment_mode = db.Column(db.String(50))
+payment_status = db.Column(db.String(50))
+
+class Feedback(db.Model):
+feedback_id = db.Column(db.Integer, primary_key=True)
+user_id = db.Column(db.Integer)
+event_id = db.Column(db.Integer)
+    rating = db.Column(db.Integer)
+    comments = db.Column(db.Text)
+
+# ================= AI INSTRUCTION GENERATOR ================= #
+
+def generate_instructions(event_type):
+    common = [
+        "Report 30 minutes early",
+        "Carry college ID card",
+        "Follow event rules strictly",
+        "Maintain discipline",
+        "Decision of judges is final"
+    ]
+
+    tech = [
+        "Bring your laptop",
+        "Internet usage allowed",
+        "Coding must be original",
+        "No external help allowed",
+        "Submit code before deadline"
+    ]
+
+    cultural = [
+        "Wear proper costume",
+        "Music should be ready",
+        "Performance time limited",
+        "Props allowed",
+        "Respect all participants"
+    ]
+
+    if event_type == "Technical":
+        return random.sample(common + tech, 5)
+elifevent_type == "Cultural":
+        return random.sample(common + cultural, 5)
+    else:
+        return random.sample(common, 5)
+
+# ================= ROUTES ================= #
+
+@app.route('/')
+def index():
+    return "College Event Management System Running"
+
+# -------- SIGNUP -------- #
+@app.route('/signup', methods=['POST'])
+def signup():
+    name = request.form.get('name')
+    email = request.form.get('email')
+    password = request.form.get('password')
+
+    if User.query.filter_by(email=email).first():
+        return "Email already exists"
+
+    hashed = generate_password_hash(password)
+    user = User(name=name, email=email, password=hashed, role="Student")
+
+db.session.add(user)
+db.session.commit()
+
+    return "Signup Successful"
+
+# -------- LOGIN -------- #
+@app.route('/login', methods=['POST'])
+def login():
+    email = request.form.get('email')
+    password = request.form.get('password')
+
+    user = User.query.filter_by(email=email).first()
+
+    if user and check_password_hash(user.password, password):
+login_user(user)
+        return "Login Success"
+
+    return "Invalid Login"
+
+# -------- ADD EVENT (WITH AI) -------- #
+@app.route('/addevent', methods=['POST'])
+@login_required
+def add_event():
+    event = Event(
+event_name=request.form.get('name'),
+        category=request.form.get('category'),
+        date=request.form.get('date'),
+        time=request.form.get('time'),
+        venue=request.form.get('venue'),
+        description=request.form.get('desc'),
+        price=float(request.form.get('price')),
+organizer_name=request.form.get('org'),
+organizer_contact=request.form.get('contact')
+    )
+
+db.session.add(event)
+db.session.commit()
+
+    # Generate AI instructions
+    instructions = generate_instructions(event.category)
+    for ins in instructions:
+db.session.add(Instruction(event_id=event.event_id, text=ins))
+
+db.session.commit()
+
+    return "Event + Instructions Added"
+
+# -------- VIEW EVENTS -------- #
+@app.route('/events')
+def events():
+    events = Event.query.all()
+    result = []
+
+    for e in events:
+        ins = Instruction.query.filter_by(event_id=e.event_id).all()
+ins_list = [i.text for i in ins]
+
+result.append({
+            "name": e.event_name,
+            "category": e.category,
+            "price": e.price,
+            "instructions": ins_list
+        })
+
+    return str(result)
+
+# -------- REGISTER EVENT -------- #
+@app.route('/register/<int:event_id>')
+@login_required
+def register(event_id):
+
+    # prevent duplicate
+    if Registration.query.filter_by(user_id=current_user.user_id, event_id=event_id).first():
+        return "Already Registered"
+
+    reg = Registration(user_id=current_user.user_id, event_id=event_id)
+db.session.add(reg)
+db.session.commit()
+
+    return "Registration Success"
+
+# -------- PAYMENT -------- #
+@app.route('/payment/<int:reg_id>/<mode>')
+@login_required
+def payment(reg_id, mode):
+
+    amount = 100
+    status = "Paid" if mode == "Online" else "Pending"
+
+    pay = Payment(
+registration_id=reg_id,
+        amount=amount,
+payment_mode=mode,
+payment_status=status
+    )
+
+db.session.add(pay)
+db.session.commit()
+
+    return f"Payment {status}"
+
+# -------- FEEDBACK -------- #
+@app.route('/feedback', methods=['POST'])
+@login_required
+def feedback():
+
+    fb = Feedback(
+user_id=current_user.user_id,
+event_id=request.form.get('event_id'),
+        rating=int(request.form.get('rating')),
+        comments=request.form.get('comments')
+    )
+
+db.session.add(fb)
+db.session.commit()
+
+    return "Feedback Submitted"
+
+# -------- REPORTS -------- #
+@app.route('/reports')
+@login_required
+def reports():
+
+total_events = Event.query.count()
+
+total_reg = db.session.execute(
+        "SELECT event_id, COUNT(*) FROM registration GROUP BY event_id"
+).fetchall()
+
+    payments = db.session.execute(
+        "SELECT payment_status, COUNT(*) FROM payment GROUP BY payment_status"
+).fetchall()
+
+    return {
+        "Total Events": total_events,
+        "Registrations": str(total_reg),
+        "Payments": str(payments)
+    }
+
+# -------- LOGOUT -------- #
+@app.route('/logout')
+@login_required
+def logout():
+logout_user()
+    return "Logged Out"
+
+# -------- RUN -------- #
+if __name__ == "__main__":
+app.run(debug=True) 
